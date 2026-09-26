@@ -60,6 +60,8 @@ interface ChatSendPayload {
   text: string
   workspaceId?: string | null
   allowWrite: boolean
+  /** 目标仓库（形如 owner/repo）。与 workspaceId 二选一，由下方选择器决定 */
+  repo?: { owner: string; repo: string; branch: string } | null
 }
 
 /** 最近一次截图的位置与缩放信息，用于把模型给的截图坐标换算回屏幕坐标 */
@@ -91,6 +93,46 @@ function sendToRenderer(event: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(CH.chatEvent, event)
   }
+}
+
+/**
+ * 会话变更推送。
+ *
+ * 为什么必须有：助手回复是在 chat:send 这个 invoke 里跑完才落盘的，
+ * 而 invoke 的 Promise 只在整轮结束后才 resolve。渲染进程若在这期间
+ * 切走再切回会话，或只是停留在同一页，都不会重新拉取磁盘内容——
+ * 表现为「消息被吞了，要重新进会话才显示」。
+ * 这里在每次写盘后主动推一次，渲染进程据此刷新当前会话与左侧列表。
+ */
+function broadcastSessionChanged(sessionId: string): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  void sessionStore
+    .get(sessionId)
+    .then((s) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      // 会话已被删除（或读不到）：summary 置 null 通知渲染进程把它从左栏摘掉。
+      // 这里不能直接 return，否则删掉的那一条会一直留在列表里。
+      if (!s) {
+        mainWindow.webContents.send(CH.sessionChanged, { sessionId, summary: null })
+        return
+      }
+      const totalTokens = s.messages.reduce(
+        (n, m) => n + (m.usage ? m.usage.inputTokens + m.usage.outputTokens : 0),
+        0
+      )
+      mainWindow.webContents.send(CH.sessionChanged, {
+        sessionId,
+        summary: {
+          id: s.id,
+          title: s.title,
+          workspaceId: s.workspaceId,
+          updatedAt: s.updatedAt,
+          messageCount: s.messages.length,
+          totalTokens
+        }
+      })
+    })
+    .catch(() => undefined)
 }
 
 function requestApprovalFor(runId: string, request: ApprovalRequest): Promise<boolean> {
@@ -630,12 +672,26 @@ function registerIpc(): void {
   /* ---------- 会话 ---------- */
   ipcMain.handle(CH.sessionList, wrap(() => sessionStore.list()))
   ipcMain.handle(CH.sessionGet, wrap((id: string) => sessionStore.get(id)))
-  ipcMain.handle(CH.sessionCreate, wrap((init) => sessionStore.create(init ?? {})))
-  ipcMain.handle(CH.sessionDelete, wrap((id: string) => sessionStore.remove(id)))
+  ipcMain.handle(
+    CH.sessionCreate,
+    wrap(async (init) => {
+      const s = await sessionStore.create(init ?? {})
+      broadcastSessionChanged(s.id)
+      return s
+    })
+  )
+  ipcMain.handle(
+    CH.sessionDelete,
+    wrap(async (id: string) => {
+      await sessionStore.remove(id)
+      broadcastSessionChanged(id)
+    })
+  )
   ipcMain.handle(
     CH.sessionRename,
     wrap(async (id: string, title: string) => {
       await sessionStore.rename(id, title)
+      broadcastSessionChanged(id)
       return true
     })
   )
@@ -643,10 +699,17 @@ function registerIpc(): void {
     CH.sessionClear,
     wrap(async (id: string) => {
       await sessionStore.clearMessages(id)
+      broadcastSessionChanged(id)
       return true
     })
   )
-  ipcMain.handle(CH.sessionSave, wrap((s) => sessionStore.save(s)))
+  ipcMain.handle(
+    CH.sessionSave,
+    wrap(async (s) => {
+      await sessionStore.save(s)
+      broadcastSessionChanged(s.id)
+    })
+  )
 
   /* ---------- 用量 ---------- */
   ipcMain.handle(CH.usageList, wrap((limit?: number) => usageStore.list(limit ?? 200)))
@@ -943,6 +1006,14 @@ function registerIpc(): void {
   )
   ipcMain.handle(CH.ghCommit, wrap((input) => github.commit(input)))
   ipcMain.handle(
+    CH.ghCreateRelease,
+    wrap((input: Parameters<GitHubClient['createRelease']>[0]) => github.createRelease(input))
+  )
+  ipcMain.handle(
+    CH.ghListReleases,
+    wrap((owner: string, repo: string) => github.listReleases(owner, repo))
+  )
+  ipcMain.handle(
     CH.ghBlobToWorkspace,
     wrap(async (owner: string, repo: string, p: string, ref: string, wsId: string) => {
       const ws = await requireWorkspace(wsId)
@@ -1013,9 +1084,23 @@ function registerIpc(): void {
       if (!payload.model) throw new Error('未选择模型')
       const session = await sessionStore.get(payload.sessionId)
       if (!session) throw new Error('会话不存在')
-      const workspace = payload.workspaceId
-        ? await requireWorkspace(payload.workspaceId).catch(() => null)
+
+      /*
+       * 目标二选一：本地工作区 或 远端仓库。
+       * 选了仓库就直接用 gh_* 工具在远端改，不 clone、不下载：
+       * 这里只把仓库坐标拼成 hint 告诉模型「在哪个仓、哪个分支干活」。
+       */
+      // 仓库优先：选择器保证只有一个目标，这里再兜一次底
+      const repoTarget = payload.repo?.owner && payload.repo?.repo ? payload.repo : null
+      const workspace = repoTarget
+        ? null
+        : payload.workspaceId
+          ? await requireWorkspace(payload.workspaceId).catch(() => null)
+          : null
+      const repoHint = repoTarget
+        ? `${repoTarget.owner}/${repoTarget.repo}（分支 ${repoTarget.branch}）。直接在远端读写：用 gh_list_dir 看目录、gh_read_file 读文件、gh_commit 提交，不要下载到本地再上传。`
         : null
+
       const runId = newRunId()
       const controller = new AbortController()
       activeRuns.set(runId, controller)
@@ -1035,6 +1120,13 @@ function registerIpc(): void {
       if (workspace && settings.injectWorkspaceTree) {
         fileTree = await wsManager.collectFiles(workspace, 300).catch(() => null)
       }
+      // 仓库模式下把远端文件清单喂给模型，省掉一轮「先列目录」
+      if (repoTarget && settings.injectWorkspaceTree) {
+        fileTree = await github
+          .tree(repoTarget.owner, repoTarget.repo, repoTarget.branch)
+          .then((nodes) => nodes.filter((n) => n.type === 'blob').slice(0, 300).map((n) => n.path))
+          .catch(() => null)
+      }
       const skills = await skillManager.enabledInstructions().catch(() => [] as string[])
 
       sendToRenderer({ type: 'start', runId, model: payload.model, providerName: provider.name })
@@ -1050,7 +1142,7 @@ function registerIpc(): void {
           messages: history,
           settings,
           workspace,
-          repoHint: null,
+          repoHint,
           fileTree,
           skills,
           toolDeps,
@@ -1064,6 +1156,8 @@ function registerIpc(): void {
         const persisted = result.appended.map(({ images: _images, ...rest }) => rest)
         await sessionStore.save({ ...session, messages: [...history, ...persisted] })
         await usageStore.append(result.usage)
+        // 落盘后立刻推送：渲染进程无需重新进入会话就能看到本轮消息
+        broadcastSessionChanged(session.id)
         return { runId, appended: persisted, usage: result.usage }
       } finally {
         activeRuns.delete(runId)

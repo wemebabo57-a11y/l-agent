@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { dataDir } from './store'
-import type { Session, SessionSummary } from '@shared/types'
+import type { RepoTarget, Session, SessionSummary } from '@shared/types'
 
 /** 落盘时每个会话保留的最大消息数（防止 session 文件无限膨胀） */
 const PERSIST_MESSAGE_LIMIT = 200
@@ -59,12 +59,21 @@ export const sessionStore = {
     return all.find((s) => s.id === id) ?? null
   },
 
-  async create(init: { workspaceId?: string | null; providerId?: string | null; model?: string | null; title?: string } = {}): Promise<Session> {
+  async create(
+    init: {
+      workspaceId?: string | null
+      repoTarget?: RepoTarget | null
+      providerId?: string | null
+      model?: string | null
+      title?: string
+    } = {}
+  ): Promise<Session> {
     const now = Date.now()
     const session: Session = {
       id: randomUUID(),
       title: init.title ?? '新会话',
       workspaceId: init.workspaceId ?? null,
+      repoTarget: init.repoTarget ?? null,
       providerId: init.providerId ?? null,
       model: init.model ?? null,
       messages: [],

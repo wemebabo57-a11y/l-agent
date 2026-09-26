@@ -368,6 +368,29 @@ export interface RemoteCommitResult {
   pulledRequest: { number: number; url: string; title: string } | null
 }
 
+/** 创建 GitHub Release 的入参 */
+export interface ReleaseInput {
+  owner: string
+  repo: string
+  /** tag 名，如 v0.2.0；不存在时 GitHub 会按 targetCommitish 自动创建 */
+  tag: string
+  name?: string
+  body?: string
+  /** 从哪个分支/提交打 tag，缺省用默认分支 */
+  targetCommitish?: string
+  draft?: boolean
+  prerelease?: boolean
+}
+
+/** 仓库目标：聊天区下方选择器选中的远端仓库 */
+export interface RepoTarget {
+  owner: string
+  repo: string
+  /** fullName，如 owner/repo，用于展示 */
+  fullName: string
+  branch: string
+}
+
 /* ------------------------------------------------------------------ */
 /* 设置                                                               */
 /* ------------------------------------------------------------------ */
@@ -433,6 +456,11 @@ export interface Session {
   id: string
   title: string
   workspaceId: string | null
+  /**
+   * 聊天目标：选中的远端仓库。与 workspaceId 二选一，
+   * 设了它就表示「直接在仓库里改」，助手走 gh_* 工具，不下载回本地。
+   */
+  repoTarget?: RepoTarget | null
   providerId: string | null
   model: string | null
   /** 仅前端内存保存完整消息；磁盘只存最近若干条 */

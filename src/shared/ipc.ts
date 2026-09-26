@@ -22,6 +22,12 @@ export const CH = {
   sessionRename: 'session:rename',
   sessionClear: 'session:clear',
   sessionSave: 'session:save',
+  /**
+   * 主进程 → 渲染进程的会话变更推送。
+   * 没有它时，助手回复写盘后渲染进程只能靠「再点一次会话」重新拉取，
+   * 表现为消息被吞掉。
+   */
+  sessionChanged: 'session:changed',
 
   /* 聊天 */
   chatSend: 'chat:send',
@@ -82,6 +88,8 @@ export const CH = {
   ghCommit: 'github:commit',
   ghBlobToWorkspace: 'github:blobToWorkspace',
   ghSearchRepos: 'github:searchRepos',
+  ghCreateRelease: 'github:createRelease',
+  ghListReleases: 'github:listReleases',
 
   /* 系统 */
   appInfo: 'app:info',

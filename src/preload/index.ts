@@ -6,7 +6,9 @@ import type {
   PluginMeta,
   ProviderConfig,
   ProviderInput,
+  ReleaseInput,
   RemoteCommitInput,
+  RepoTarget,
   Result,
   Session,
   SessionSummary,
@@ -42,13 +44,24 @@ const api = {
   sessions: {
     list: () => ipcRenderer.invoke(CH.sessionList) as Promise<Result<SessionSummary[]>>,
     get: (id: string) => ipcRenderer.invoke(CH.sessionGet, id) as Promise<Result<Session | null>>,
-    create: (init: { workspaceId?: string | null }) =>
+    create: (init: { workspaceId?: string | null; repoTarget?: RepoTarget | null }) =>
       ipcRenderer.invoke(CH.sessionCreate, init) as Promise<Result<Session>>,
     remove: (id: string) => ipcRenderer.invoke(CH.sessionDelete, id) as Promise<Result<void>>,
     rename: (id: string, title: string) =>
       ipcRenderer.invoke(CH.sessionRename, id, title) as Promise<Result<boolean>>,
     clear: (id: string) => ipcRenderer.invoke(CH.sessionClear, id) as Promise<Result<boolean>>,
-    save: (s: Session) => ipcRenderer.invoke(CH.sessionSave, s) as Promise<Result<void>>
+    save: (s: Session) => ipcRenderer.invoke(CH.sessionSave, s) as Promise<Result<void>>,
+    /**
+     * 订阅会话变更（主进程写盘后推送）。
+     * 事件不携带完整会话，只带 id 与摘要，渲染进程按需拉全量——
+     * 避免把带工具结果的超大会话每次都塞进 IPC。
+     */
+    onChanged: (handler: (e: { sessionId: string; summary: SessionSummary | null }) => void): (() => void) => {
+      const listener = (_e: unknown, payload: { sessionId: string; summary: SessionSummary | null }): void =>
+        handler(payload)
+      ipcRenderer.on(CH.sessionChanged, listener)
+      return () => ipcRenderer.removeListener(CH.sessionChanged, listener)
+    }
   },
 
   chat: {
@@ -58,6 +71,8 @@ const api = {
       model: string
       text: string
       workspaceId: string | null
+      /** 远端仓库目标；与 workspaceId 二选一 */
+      repo?: { owner: string; repo: string; branch: string } | null
       allowWrite: boolean
     }) =>
       ipcRenderer.invoke(CH.chatSend, payload) as Promise<
@@ -159,6 +174,10 @@ const api = {
     readFile: (owner: string, repo: string, path: string, ref: string) =>
       ipcRenderer.invoke(CH.ghReadFile, owner, repo, path, ref) as Promise<Result<unknown>>,
     commit: (input: RemoteCommitInput) => ipcRenderer.invoke(CH.ghCommit, input) as Promise<Result<unknown>>,
+    createRelease: (input: ReleaseInput) =>
+      ipcRenderer.invoke(CH.ghCreateRelease, input) as Promise<Result<unknown>>,
+    listReleases: (owner: string, repo: string) =>
+      ipcRenderer.invoke(CH.ghListReleases, owner, repo) as Promise<Result<unknown[]>>,
     pullToWorkspace: (owner: string, repo: string, path: string, ref: string, wsId: string) =>
       ipcRenderer.invoke(CH.ghBlobToWorkspace, owner, repo, path, ref, wsId) as Promise<Result<unknown>>
   },

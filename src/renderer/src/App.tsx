@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { AppSettings, PermissionMode, ProviderConfig, Session, SessionSummary, Workspace } from '@shared/types'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type {
+  AppSettings,
+  PermissionMode,
+  ProviderConfig,
+  RepoTarget,
+  Session,
+  SessionSummary,
+  Workspace
+} from '@shared/types'
 import { api, messageOf, unwrap } from './lib/api'
+import { formatRelative } from './lib/format'
 import { Alert, Button, Spinner } from './components/ui'
 import { ChatView } from './components/ChatView'
 import { UsageView } from './components/UsageView'
@@ -49,6 +58,8 @@ export default function App(): React.JSX.Element {
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [session, setSession] = useState<Session | null>(null)
+  /** 聊天框下方的目标二选一：本地工作区或远端仓库（选了仓库就直接在仓库改） */
+  const [repoTarget, setRepoTarget] = useState<RepoTarget | null>(null)
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null)
   const [activeModel, setActiveModel] = useState<string | null>(null)
   const [notice, setNotice] = useState<{ text: string; kind: 'info' | 'error' } | null>(null)
@@ -123,6 +134,77 @@ export default function App(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /**
+   * 追踪当前会话 id。用 ref 而不是闭包变量，订阅只建立一次，
+   * 不会因为切会话反复拆装监听器（漏事件就是这么来的）。
+   */
+  const sessionRef = useRef<string | null>(null)
+  useEffect(() => {
+    sessionRef.current = session?.id ?? null
+  }, [session?.id])
+
+  /**
+   * 同上：订阅回调只建立一次，newSession 需要拿到最新的工作区，
+   * 用 ref 兜住，免得闭包停在首帧的空值上。
+   */
+  const workspaceRef = useRef<string | null>(null)
+  useEffect(() => {
+    workspaceRef.current = activeWorkspaceId
+  }, [activeWorkspaceId])
+
+  /**
+   * 本端正在删除的会话 id。删当前会话时 removeSession 自己会切到下一條，
+   * 推送回调不该再切一次——否则可能多出一个空白会话。
+   */
+  const deletingRef = useRef<string | null>(null)
+
+  /**
+   * 订阅主进程的会话变更推送。
+   *
+   * 没有这段时：助手回复是在 chat:send 这个 invoke 里跑完才落盘的，
+   * 而 invoke 的 Promise 要到整轮结束才 resolve；这期间渲染进程既不重拉，
+   * 也收不到任何通知——表现就是「消息被吞了，重新进一次会话才显示」。
+   * 这里在每次写盘后按需拉全量，左栏列表用事件自带的摘要就地更新。
+   */
+  useEffect(() => {
+    const off = api.sessions.onChanged((e) => {
+      // 左栏列表：摘要在事件里，就地更新，避免每次都重拉整个列表
+      setSessions((prev) => {
+        if (!e.summary) return prev.filter((s) => s.id !== e.sessionId)
+        const idx = prev.findIndex((s) => s.id === e.sessionId)
+        if (idx < 0) return [e.summary, ...prev]
+        const next = [...prev]
+        next[idx] = e.summary
+        return next.sort((a, b) => b.updatedAt - a.updatedAt)
+      })
+
+      // 当前会话：拉全量。事件只带摘要，避免把带工具结果的超大会话塞进 IPC
+      if (sessionRef.current !== e.sessionId) return
+      if (!e.summary) {
+        // 自己刚点的删除由 removeSession 收尾，这里不重复切
+        if (deletingRef.current === e.sessionId) return
+        // 当前会话被别处删掉：换一条，没有就新建，别停在已不存在的会话上
+        void (async () => {
+          try {
+            const next = await unwrap(api.sessions.list())
+            if (next.length) await openSession(next[0].id)
+            else await newSession()
+          } catch {
+            /* 交给用户下一步操作兜底 */
+          }
+        })()
+        return
+      }
+      void unwrap(api.sessions.get(e.sessionId))
+        .then((full) => {
+          if (full && sessionRef.current === full.id) setSession(full)
+        })
+        .catch(() => undefined)
+    })
+    return off
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   /* ---------------- 顶部选择器联动 ---------------- */
   useEffect(() => {
     if (!ready) return
@@ -141,8 +223,23 @@ export default function App(): React.JSX.Element {
 
   const pickWorkspace = (id: string | null): void => {
     setActiveWorkspaceId(id)
+    // 选了仓库就不再挂工作区，两者互斥
+    if (id) setRepoTarget(null)
     if (session) {
       const next = { ...session, workspaceId: id }
+      setSession(next)
+      void api.sessions.save(next)
+    }
+  }
+
+  /**
+   * 目标切换：选仓库时把工作区让出去，反之亦然，保证始终只有一个目标。
+   * 目标随会话一起落盘，下次打开还是这个仓库/工作区。
+   */
+  const pickRepoTarget = (r: RepoTarget | null): void => {
+    setRepoTarget(r)
+    if (session) {
+      const next = { ...session, workspaceId: r ? null : session.workspaceId }
       setSession(next)
       void api.sessions.save(next)
     }
@@ -151,7 +248,7 @@ export default function App(): React.JSX.Element {
   /* ---------------- 会话操作 ---------------- */
   const newSession = async (): Promise<void> => {
     try {
-      const s = await unwrap(api.sessions.create({ workspaceId: activeWorkspaceId }))
+      const s = await unwrap(api.sessions.create({ workspaceId: workspaceRef.current }))
       setSession(s)
       await reloadSessions()
       setPage('chat')
@@ -166,6 +263,7 @@ export default function App(): React.JSX.Element {
       if (s) {
         setSession(s)
         if (s.workspaceId) setActiveWorkspaceId(s.workspaceId)
+        setRepoTarget(s.repoTarget ?? null)
         setPage('chat')
       }
     } catch (e) {
@@ -175,6 +273,7 @@ export default function App(): React.JSX.Element {
 
   const removeSession = async (id: string): Promise<void> => {
     try {
+      deletingRef.current = id
       await unwrap(api.sessions.remove(id))
       const next = await unwrap(api.sessions.list())
       setSessions(next)
@@ -184,6 +283,8 @@ export default function App(): React.JSX.Element {
       }
     } catch (e) {
       notify(messageOf(e), 'error')
+    } finally {
+      deletingRef.current = null
     }
   }
 
@@ -271,7 +372,12 @@ export default function App(): React.JSX.Element {
                 onClick={() => void openSession(s.id)}
                 title={`${s.messageCount} 条消息 · ${s.totalTokens} tokens`}
               >
-                <span className="session-title">{s.title}</span>
+                <span className="session-main">
+                  <span className="session-title">{s.title}</span>
+                  <span className="session-meta">
+                    {s.messageCount} 条 · {formatRelative(s.updatedAt)}
+                  </span>
+                </span>
                 <button
                   className="btn btn-ghost btn-sm btn-icon"
                   title="删除会话"
@@ -377,6 +483,10 @@ export default function App(): React.JSX.Element {
                 activeWorkspaceId={activeWorkspaceId}
                 activeProviderId={activeProviderId}
                 activeModel={activeModel}
+                repoTarget={repoTarget}
+                onRepoTargetChange={pickRepoTarget}
+                onPickWorkspace={pickWorkspace}
+                onOpenGitHub={() => setPage('github')}
               />
             ) : (
               <div className="page">

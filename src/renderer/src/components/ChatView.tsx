@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   ChatMessage,
   ProviderConfig,
+  RepoRef,
+  RepoTarget,
   SelfAssessedRisk,
   Session,
   StreamEvent,
@@ -13,7 +15,7 @@ import { api, messageOf, unwrap } from '../lib/api'
 import { formatCost, formatInt, formatMs, formatPercent } from '../lib/format'
 import { ApprovalCard, StreamingBubble, useAutoScroll, MessageView, type StreamingState } from './Message'
 import { Alert, Button, Empty } from './ui'
-import { IconStop } from './icons'
+import { IconBranch, IconGithub, IconStop } from './icons'
 
 interface ApprovalItem {
   requestId: string
@@ -33,7 +35,11 @@ export function ChatView({
   workspaces,
   activeWorkspaceId,
   activeProviderId,
-  activeModel
+  activeModel,
+  repoTarget,
+  onRepoTargetChange,
+  onPickWorkspace,
+  onOpenGitHub
 }: {
   session: Session
   onSessionUpdated: (s: Session) => void
@@ -42,6 +48,11 @@ export function ChatView({
   activeWorkspaceId: string | null
   activeProviderId: string | null
   activeModel: string | null
+  /** 选中的远端仓库；与 activeWorkspaceId 二选一 */
+  repoTarget: RepoTarget | null
+  onRepoTargetChange: (r: RepoTarget | null) => void
+  onPickWorkspace: (id: string | null) => void
+  onOpenGitHub: () => void
 }): React.JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>(session.messages)
   const [stream, setStream] = useState<StreamingState | null>(null)
@@ -52,7 +63,74 @@ export function ChatView({
   const runIdRef = useRef<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // 切换会话时同步消息列表
+  /* 仓库模式：仓库列表 / 分支列表按需拉取，不在首帧就打扰 GitHub */
+  const [repos, setRepos] = useState<RepoRef[]>([])
+  const [reposLoading, setReposLoading] = useState(false)
+  const [branches, setBranches] = useState<string[]>([])
+  const [branchesLoading, setBranchesLoading] = useState(false)
+  const [repoError, setRepoError] = useState<string | null>(null)
+
+  /** 拉分支列表；失败时至少保留当前分支，别把选择框清空 */
+  const loadBranches = useCallback(
+    async (owner: string, repo: string, current: string): Promise<void> => {
+      setBranchesLoading(true)
+      try {
+        const list = (await unwrap(api.github.branches(owner, repo))) as string[]
+        setBranches(list.length ? list : [current])
+      } catch {
+        setBranches([current])
+      } finally {
+        setBranchesLoading(false)
+      }
+    },
+    []
+  )
+
+  /**
+   * 打开仓库选择：默认选第一个仓库并带出它的默认分支。
+   * 未连接 GitHub 时把错误摆到界面上，给一条去连接的路。
+   */
+  const openRepoPicker = useCallback(async (): Promise<void> => {
+    setRepoError(null)
+    setReposLoading(true)
+    try {
+      const list = (await unwrap(api.github.repos(1))) as RepoRef[]
+      setRepos(list)
+      if (!list.length) {
+        setRepoError('该账号下没有可用仓库')
+        return
+      }
+      const first = list[0]
+      onRepoTargetChange({
+        owner: first.owner,
+        repo: first.name,
+        fullName: first.fullName,
+        branch: first.defaultBranch
+      })
+      await loadBranches(first.owner, first.name, first.defaultBranch)
+    } catch (e) {
+      setRepoError(messageOf(e))
+    } finally {
+      setReposLoading(false)
+    }
+  }, [loadBranches, onRepoTargetChange])
+
+  // 已选中仓库但列表还没拉过（例如会话切换后恢复），补一次列表
+  useEffect(() => {
+    if (!repoTarget || repos.length) return
+    setReposLoading(true)
+    void unwrap(api.github.repos(1))
+      .then((list) => {
+        const rows = list as RepoRef[]
+        setRepos(rows)
+        if (rows.length) void loadBranches(repoTarget.owner, repoTarget.repo, repoTarget.branch)
+      })
+      .catch((e) => setRepoError(messageOf(e)))
+      .then(() => setReposLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoTarget?.fullName])
+
+  // 切换会话：整块重置（切走时必须丢掉上一个会话的流式态）
   useEffect(() => {
     setMessages(session.messages)
     setStream(null)
@@ -60,6 +138,18 @@ export function ChatView({
     setError(null)
     runIdRef.current = null
   }, [session.id])
+
+  /**
+   * 同一个会话被主进程推送了新内容：用服务端全量覆盖本地。
+   *
+   * 只在「这一轮已结束」时同步——流式过程中本地还握着乐观插入的用户消息，
+   * 此时若被覆盖，用户会看到自己刚发的话消失（就是那个「被吞」的观感）。
+   * updatedAt 变化说明磁盘上确实有了新版本，覆盖是安全的。
+   */
+  useEffect(() => {
+    if (runIdRef.current) return
+    setMessages(session.messages)
+  }, [session.id, session.updatedAt])
 
   /* ---------------- 流式事件订阅 ---------------- */
   useEffect(() => {
@@ -246,7 +336,11 @@ export function ChatView({
           providerId: activeProviderId,
           model: activeModel,
           text,
-          workspaceId: activeWorkspaceId,
+          // 二选一：选了仓库就交仓库坐标，主进程直接用 gh_* 工具在远端改
+          workspaceId: repoTarget ? null : activeWorkspaceId,
+          repo: repoTarget
+            ? { owner: repoTarget.owner, repo: repoTarget.repo, branch: repoTarget.branch }
+            : null,
           allowWrite
         })
       )
@@ -258,7 +352,17 @@ export function ChatView({
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id))
       setInput(text)
     }
-  }, [input, stream, activeProviderId, activeModel, providers, session.id, activeWorkspaceId, allowWrite])
+  }, [
+    input,
+    stream,
+    activeProviderId,
+    activeModel,
+    providers,
+    session.id,
+    activeWorkspaceId,
+    repoTarget,
+    allowWrite
+  ])
 
   const stop = useCallback(async () => {
     const runId = runIdRef.current
@@ -288,7 +392,16 @@ export function ChatView({
           {messages.length === 0 && !stream ? (
             <Empty title="开始对话">
               在顶部选择供应商与模型后直接提问。
-              {selectedWs ? (
+              {repoTarget ? (
+                <>
+                  <br />
+                  <span className="tiny">
+                    目标仓库 <span className="mono">{repoTarget.fullName}</span>（分支{' '}
+                    <span className="mono">{repoTarget.branch}</span>）：助手直接读远端文件并提交回仓库，
+                    不会下载到本地。
+                  </span>
+                </>
+              ) : selectedWs ? (
                 <>
                   <br />
                   <span className="tiny">
@@ -298,7 +411,9 @@ export function ChatView({
               ) : (
                 <>
                   <br />
-                  <span className="tiny">在「工作区」添加目录后，助手才能读写本地文件。</span>
+                  <span className="tiny">
+                    在下方选择工作区或 GitHub 仓库后，助手才能读写文件。
+                  </span>
                 </>
               )}
               <br />
@@ -364,8 +479,107 @@ export function ChatView({
                 />
                 允许写入
               </label>
-              {selectedWs ? <span className="pill tiny">{selectedWs.name}</span> : null}
               <div className="topbar-spacer" />
+
+              {/* 目标二选一：本地工作区 或 GitHub 仓库。
+                  选仓库时助手直接用 gh_* 工具在远端读写并提交，不下载回本地。 */}
+              <div className="target-pick">
+                <button
+                  type="button"
+                  className={`target-mode${repoTarget ? '' : ' active'}`}
+                  onClick={() => onRepoTargetChange(null)}
+                  title="在本地工作区读写文件"
+                >
+                  工作区
+                </button>
+                <button
+                  type="button"
+                  className={`target-mode${repoTarget ? ' active' : ''}`}
+                  onClick={() => {
+                    if (!repoTarget) void openRepoPicker()
+                  }}
+                  title="直接在 GitHub 仓库里改，不下载回本地"
+                >
+                  <IconGithub size={11} /> 仓库
+                </button>
+
+                {repoTarget ? (
+                  <>
+                    <select
+                      className="select select-tight"
+                      value={`${repoTarget.owner}/${repoTarget.repo}`}
+                      onChange={(e) => {
+                        const hit = repos.find((r) => `${r.owner}/${r.name}` === e.target.value)
+                        if (hit) {
+                          void onRepoTargetChange({
+                            owner: hit.owner,
+                            repo: hit.name,
+                            fullName: hit.fullName,
+                            branch: hit.defaultBranch
+                          })
+                          void loadBranches(hit.owner, hit.name, hit.defaultBranch)
+                        }
+                      }}
+                      disabled={busy || reposLoading}
+                      title="选择要编辑的仓库"
+                    >
+                      {reposLoading ? <option value="">加载中…</option> : null}
+                      {!reposLoading && repos.length === 0 ? <option value="">无可用仓库</option> : null}
+                      {repos.map((r) => (
+                        <option key={r.fullName} value={`${r.owner}/${r.name}`}>
+                          {r.fullName}
+                          {r.private ? ' (私有)' : ''}
+                        </option>
+                      ))}
+                    </select>
+
+                    <span className="branch-pick" title="提交到该分支">
+                      <IconBranch size={11} />
+                      <select
+                        className="select select-tight"
+                        value={repoTarget.branch}
+                        onChange={(e) =>
+                          onRepoTargetChange({ ...repoTarget, branch: e.target.value })
+                        }
+                        disabled={busy || branchesLoading}
+                      >
+                        {branchesLoading ? <option value="">加载中…</option> : null}
+                        {branches.map((b) => (
+                          <option key={b} value={b}>
+                            {b}
+                          </option>
+                        ))}
+                      </select>
+                    </span>
+                  </>
+                ) : (
+                  <select
+                    className="select select-tight"
+                    value={activeWorkspaceId ?? ''}
+                    onChange={(e) => onPickWorkspace(e.target.value || null)}
+                    disabled={busy}
+                    title="选择本地工作区目录"
+                  >
+                    <option value="">不限定工作区</option>
+                    {workspaces.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {repoError ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={onOpenGitHub}
+                    title={repoError}
+                  >
+                    去连接 GitHub
+                  </button>
+                ) : null}
+              </div>
               {busy ? (
                 <Button size="sm" variant="danger" onClick={() => void stop()}>
                   <IconStop size={11} /> 停止

@@ -809,6 +809,62 @@ input[type='checkbox'] {
   margin-left: auto;
 }
 
+/* ---------------- 聊天目标选择（工作区 / 仓库 二选一） ---------------- */
+
+.target-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* 分段按钮：未选中的弱化，选中项用强调色描边，一眼看出当前目标 */
+.target-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: var(--hit-min);
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-2);
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.target-mode:hover {
+  color: var(--fg);
+  background: var(--bg-3);
+}
+
+.target-mode.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 550;
+}
+
+/* 目标下拉：宽度自适应内容，别把 composer 挤爆 */
+.select-tight {
+  width: auto;
+  max-width: 260px;
+  min-height: var(--hit-min);
+  padding: 3px 8px;
+  font-size: var(--text-sm);
+}
+
+.branch-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-2);
+  min-width: 0;
+}
+
 /* ---------------- 审批卡片 ---------------- */
 
 .approval {
@@ -1357,6 +1413,32 @@ input[type='checkbox'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 会话条目第二行：条数与相对时间，用弱化色避免抢标题注意力 */
+.session-meta {
+  display: block;
+  font-size: var(--text-micro);
+  color: var(--fg-2);
+  opacity: 0.75;
+  margin-top: 1px;
+}
+
+.session-item.active .session-meta {
+  color: var(--accent-text);
+  opacity: 0.8;
+}
+
+/* 会话条目纵向排布：标题 + 元信息 */
+.session-item {
+  align-items: flex-start;
+}
+
+.session-item .session-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .session-list {

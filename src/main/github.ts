@@ -554,6 +554,75 @@ export class GitHubClient {
   }
 
   /* ---------------------------------------------------------------- */
+  /* Release                                                           */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * 创建 release。
+   *
+   * tag 不存在时 GitHub 会自动以 targetCommitish 为起点建 tag，
+   * 所以这里不用先手工建 tag——少一次可能失败的往返。
+   */
+  async createRelease(input: {
+    owner: string
+    repo: string
+    tag: string
+    name?: string
+    body?: string
+    targetCommitish?: string
+    draft?: boolean
+    prerelease?: boolean
+  }): Promise<{ id: number; tag: string; name: string | null; url: string; draft: boolean }> {
+    const { data } = await this.request<{
+      id: number
+      tag_name: string
+      name: string | null
+      html_url: string
+      draft: boolean
+    }>('POST', `/repos/${input.owner}/${input.repo}/releases`, {
+      tag_name: input.tag,
+      name: input.name ?? input.tag,
+      body: input.body ?? '',
+      target_commitish: input.targetCommitish,
+      draft: input.draft ?? false,
+      prerelease: input.prerelease ?? false
+    })
+    return {
+      id: data.id,
+      tag: data.tag_name,
+      name: data.name,
+      url: data.html_url,
+      draft: data.draft
+    }
+  }
+
+  async listReleases(
+    owner: string,
+    repo: string,
+    perPage = 30
+  ): Promise<{ tag: string; name: string | null; url: string; draft: boolean; prerelease: boolean; at: string }[]> {
+    const { data } = await this.request<
+      {
+        tag_name: string
+        name: string | null
+        html_url: string
+        draft: boolean
+        prerelease: boolean
+        published_at: string | null
+        created_at: string
+      }[]
+    >('GET', `/repos/${owner}/${repo}/releases?per_page=${perPage}`)
+    return data.map((r) => ({
+      tag: r.tag_name,
+      name: r.name,
+      url: r.html_url,
+      draft: r.draft,
+      prerelease: r.prerelease,
+      at: r.published_at ?? r.created_at
+    }))
+  }
+
+  /* ---------------------------------------------------------------- */
   /* 把仓库文件导出到本地工作区（可选能力）                              */
   /* ---------------------------------------------------------------- */
 
