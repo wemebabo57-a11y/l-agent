@@ -1,7 +1,7 @@
 {
   "name": "lagent",
   "productName": "lagent",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "private": true,
   "description": "lagent — 多模型接入 / Skill 管理 / 工作区管理 / GitHub 直连编辑的 AI Agent 桌面工具",
   "main": "./out/main/index.js",

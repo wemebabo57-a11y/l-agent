@@ -11,19 +11,10 @@ src/                  源码（唯一需要手写的地方）
   preload/            contextBridge 白名单（渲染进程只能碰这里暴露的 API）
   renderer/           React 界面
   shared/             只有类型契约，主进程与渲染进程共用
-  0.1.0/              该版本源码归档（从 git 标签 v0.1.0 导出，只读留档）
-  0.1.1/              该版本源码归档（发布时快照，只读留档）
 installer/lagent.iss  Inno Setup 安装包脚本
 scripts/              开发、测试、打包、审计脚本
 out/                  编译中间产物（electron-vite 输出，不入库）
-dist/                 最终打包产物（不入库）
-  0.1.0/              该版本安装包 + SHA256SUMS.txt
-  0.1.1/              该版本安装包 / 免安装版压缩包 + SHA256SUMS.txt
-  win-unpacked/       electron-builder 免安装目录（构建中间产物）
-
-> 版本归档目录（`src/<版本>/`、`dist/<版本>/`）只作留档，**不参与编译**：
-> tsconfig 的 include 与 vite 入口都指向 `src/main`、`src/renderer` 等具体子路径，
-> 不会被误扫；新增版本归档时直接建同名目录即可。
+dist/                 最终打包产物（免安装目录 + 安装包，不入库）
 ```
 
 ## 开发

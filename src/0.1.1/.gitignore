@@ -1,0 +1,16 @@
+node_modules/
+out/
+# dist/ 是 electron-builder 与 Inno Setup 的产物目录（免安装目录 + 安装包）
+dist/
+release/
+.electron-cache/
+.npm-cache/
+*.log
+*.tsbuildinfo
+.DS_Store
+# 本地运行期数据（API Key 加密串、skills、索引）不应入库
+.lagent-data/
+# 视觉审计产生的截图
+shots/
+# 端到端联调日志（含模型输出，可能带路径信息）
+e2e-log*.txt

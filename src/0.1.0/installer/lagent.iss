@@ -10,7 +10,7 @@
 ; ---------------------------------------------------------------------------
 
 #define AppName        "lagent"
-#define AppVersion     "0.1.1"
+#define AppVersion     "0.1.0"
 #define AppPublisher   "lagent"
 #define AppExeName     "lagent.exe"
 #define SourceDir      "..\dist\win-unpacked"

@@ -1,0 +1,42 @@
+appId: dev.lagent.app
+productName: lagent
+copyright: Copyright © 2025 lagent
+
+directories:
+  # dist/ 只放最终分发产物；out/ 是 electron-vite 的编译中间产物
+  output: dist
+  buildResources: build
+
+# 只把编译产物和 manifest 装进去；src/ 源码不参与分发
+files:
+  - out/**/*
+  - package.json
+
+# 关掉 asar：插件宿主用真实文件路径 spawn worker.mjs
+# （src/main/plugins/index.ts:594），而 spawn 不走 Electron 的 asar 补丁，
+# 打进归档会直接 ENOENT。用户要的也正是一个"带依赖的普通目录"。
+asar: false
+
+# 本机 electron-builder 解压官方 Electron 分发包时会卡死（无 CPU、无 IO 进展），
+# 但 node_modules/electron/dist 已经是解压好的完整运行时。
+# 指定 electronDist 直接复用它，跳过下载+解压这一步。
+electronDist: node_modules/electron/dist
+
+# dependencies 为空对象，全部依赖都由 vite 打进产物，无需重建原生模块
+npmRebuild: false
+
+win:
+  # dir = 免安装目录（带全部依赖），安装包由 Inno Setup 单独制作
+  target:
+    - dir
+  executableName: lagent
+
+mac:
+  target:
+    - dir
+  category: public.app-category.developer-tools
+
+linux:
+  target:
+    - dir
+  category: Development
