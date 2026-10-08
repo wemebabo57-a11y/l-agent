@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      严格 CSP：禁用 remote 与 inline script。
+      frame-src 放行 lagent-plugin: —— 插件面板由主进程的自定义协议提供，
+      该协议只暴露插件自己的目录，且响应自带独立 CSP。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; font-src 'self' data:; frame-src 'self' lagent-plugin:; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>lagent</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
